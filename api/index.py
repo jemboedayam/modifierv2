@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response,render_template
+from flask import Flask, request, jsonify, Response, render_template
 from flask_cors import CORS
 import numpy as np
 from moviepy import VideoFileClip
@@ -54,17 +54,22 @@ def apply_phonk_effects(frame):
     return frame.astype(np.uint8)
 
 def process_video_in_memory(video_data, original_filename):
-    """Process video entirely in memory"""
+    """Process video entirely in memory using /tmp directory for Vercel"""
     
-    # Create temporary files for moviepy (it requires file paths)
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_input:
+    # Create temporary files in /tmp directory (required for Vercel)
+    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir='/tmp') as temp_input:
         temp_input.write(video_data)
         temp_input_path = temp_input.name
     
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as temp_output:
+    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir='/tmp') as temp_output:
         temp_output_path = temp_output.name
     
     try:
+        # Set TMPDIR environment variable to /tmp for MoviePy
+        os.environ['TMPDIR'] = '/tmp'
+        os.environ['TEMP'] = '/tmp'
+        os.environ['TMP'] = '/tmp'
+        
         # Load video
         clip = VideoFileClip(temp_input_path)
         
@@ -119,7 +124,7 @@ def process_video_in_memory(video_data, original_filename):
             audio = clip.audio.with_volume_scaled(0.85)
             final_clip = final_clip.with_audio(audio)
         
-        # Write to temporary output file
+        # Write to temporary output file in /tmp
         final_clip.write_videofile(
             temp_output_path,
             codec="libx264",
@@ -128,7 +133,8 @@ def process_video_in_memory(video_data, original_filename):
             threads=2,
             bitrate="2000k",
             audio_bitrate="128k",
-            logger=None
+            logger=None,
+            temp_audiofile=f'/tmp/temp_audio_{os.getpid()}.m4a'  # Explicitly set temp audio path
         )
         
         # Read processed video into memory
@@ -146,8 +152,12 @@ def process_video_in_memory(video_data, original_filename):
         try:
             os.unlink(temp_input_path)
             os.unlink(temp_output_path)
-        except:
-            pass
+            # Clean up any additional temp files MoviePy might have created
+            temp_audio_path = f'/tmp/temp_audio_{os.getpid()}.m4a'
+            if os.path.exists(temp_audio_path):
+                os.unlink(temp_audio_path)
+        except Exception as cleanup_error:
+            print(f"Cleanup warning: {cleanup_error}")
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
@@ -205,7 +215,7 @@ def upload_file():
 def status():
     return jsonify({
         'status': 'running',
-        'message': 'In-memory Phonk video processor is ready',
+        'message': 'In-memory Phonk video processor is ready (Vercel optimized)',
         'supported_formats': list(ALLOWED_EXTENSIONS),
         'max_file_size_mb': MAX_CONTENT_LENGTH // (1024 * 1024)
     })
@@ -218,6 +228,6 @@ if __name__ == '__main__':
     print("Starting In-Memory Phonk Video Processor...")
     print(f"Supported formats: {', '.join(ALLOWED_EXTENSIONS)}")
     print(f"Max file size: {MAX_CONTENT_LENGTH // (1024 * 1024)}MB")
-    print("Processing videos entirely in memory - no disk storage")
+    print("Processing videos entirely in memory - optimized for Vercel")
     
-    # app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
