@@ -221,4 +221,4 @@ if __name__ == '__main__':
     print(f"Max file size: {MAX_CONTENT_LENGTH // (1024 * 1024)}MB")
     print("Processing videos entirely in memory - no disk storage")
     
-    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
+    # app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
