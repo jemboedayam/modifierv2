@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response, render_template
+from flask import Flask, request, jsonify, Response, render_template, send_file
 from flask_cors import CORS
 import numpy as np
 from moviepy import VideoFileClip
@@ -9,6 +9,7 @@ import time
 import uuid
 import base64
 import json
+import io
 
 app = Flask(__name__)
 CORS(app)
@@ -21,7 +22,6 @@ MOBILE_MAX_RESOLUTION = (1080, 1920)
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 # In-memory storage for processing status and results
-# In production, you'd want to use Redis or a database
 processing_jobs = {}
 processed_videos = {}
 
@@ -69,10 +69,14 @@ def apply_phonk_effects(frame):
     
     return frame.astype(np.uint8)
 
-def process_video_in_memory(video_data, original_filename):
-    """Process video entirely in memory using /tmp directory for Vercel"""
+def process_video_in_memory(video_data, original_filename, job_id):
+    """Process video entirely in memory using /tmp directory"""
     
-    # Create temporary files in /tmp directory (required for Vercel)
+    # Update progress
+    processing_jobs[job_id]['progress'] = 10
+    processing_jobs[job_id]['message'] = 'Loading video...'
+    
+    # Create temporary files in /tmp directory
     with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir='/tmp') as temp_input:
         temp_input.write(video_data)
         temp_input_path = temp_input.name
@@ -81,13 +85,19 @@ def process_video_in_memory(video_data, original_filename):
         temp_output_path = temp_output.name
     
     try:
-        # Set TMPDIR environment variable to /tmp for MoviePy
+        # Set environment variables for MoviePy
         os.environ['TMPDIR'] = '/tmp'
         os.environ['TEMP'] = '/tmp'
         os.environ['TMP'] = '/tmp'
         
+        processing_jobs[job_id]['progress'] = 20
+        processing_jobs[job_id]['message'] = 'Analyzing video...'
+        
         # Load video
         clip = VideoFileClip(temp_input_path)
+        
+        processing_jobs[job_id]['progress'] = 30
+        processing_jobs[job_id]['message'] = 'Resizing for mobile...'
         
         # Optimize for mobile
         w, h = clip.size
@@ -106,6 +116,9 @@ def process_video_in_memory(video_data, original_filename):
             new_h = new_h if new_h % 2 == 0 else new_h - 1
             
             clip = clip.resized((new_w, new_h))
+        
+        processing_jobs[job_id]['progress'] = 40
+        processing_jobs[job_id]['message'] = 'Applying phonk effects...'
         
         def transform_frame(get_frame, t):
             """Transform each frame with phonk effects"""
@@ -135,23 +148,32 @@ def process_video_in_memory(video_data, original_filename):
         # Apply transformation
         final_clip = clip.transform(transform_frame)
         
+        processing_jobs[job_id]['progress'] = 60
+        processing_jobs[job_id]['message'] = 'Processing audio...'
+        
         # Apply audio effects
         if clip.audio is not None:
             audio = clip.audio.with_volume_scaled(0.85)
             final_clip = final_clip.with_audio(audio)
         
-        # Write to temporary output file in /tmp
+        processing_jobs[job_id]['progress'] = 70
+        processing_jobs[job_id]['message'] = 'Rendering final video...'
+        
+        # Write to temporary output file
         final_clip.write_videofile(
             temp_output_path,
             codec="libx264",
             audio_codec="aac",
-            preset="fast",  # Changed to fast for quicker processing
+            preset="fast",
             threads=2,
-            bitrate="1500k",  # Reduced bitrate for faster processing
+            bitrate="1500k",
             audio_bitrate="128k",
             logger=None,
             temp_audiofile=f'/tmp/temp_audio_{os.getpid()}.m4a'
         )
+        
+        processing_jobs[job_id]['progress'] = 90
+        processing_jobs[job_id]['message'] = 'Finalizing...'
         
         # Read processed video into memory
         with open(temp_output_path, 'rb') as f:
@@ -160,6 +182,8 @@ def process_video_in_memory(video_data, original_filename):
         # Clean up clips
         clip.close()
         final_clip.close()
+        
+        processing_jobs[job_id]['progress'] = 100
         
         return processed_video_data
         
@@ -178,34 +202,39 @@ def background_process_video(job_id, video_data, original_filename):
     """Process video in background thread"""
     try:
         processing_jobs[job_id]['status'] = JobStatus.PROCESSING
-        processing_jobs[job_id]['message'] = 'Processing video...'
+        processing_jobs[job_id]['message'] = 'Starting video processing...'
+        processing_jobs[job_id]['progress'] = 0
         
         # Process the video
-        processed_video_data = process_video_in_memory(video_data, original_filename)
+        processed_video_data = process_video_in_memory(video_data, original_filename, job_id)
         
         # Store the result
         processed_videos[job_id] = {
             'data': processed_video_data,
             'filename': f"phonk_{original_filename.rsplit('.', 1)[0]}.mp4",
-            'created_at': time.time()
+            'created_at': time.time(),
+            'size': len(processed_video_data)
         }
         
         # Update job status
         processing_jobs[job_id]['status'] = JobStatus.COMPLETED
-        processing_jobs[job_id]['message'] = 'Video processing completed'
+        processing_jobs[job_id]['message'] = 'Video processing completed successfully!'
+        processing_jobs[job_id]['progress'] = 100
         processing_jobs[job_id]['download_url'] = f'/download/{job_id}'
+        
+        print(f"Job {job_id} completed successfully. Video size: {len(processed_video_data)} bytes")
         
     except Exception as e:
         processing_jobs[job_id]['status'] = JobStatus.ERROR
         processing_jobs[job_id]['message'] = f'Processing failed: {str(e)}'
+        processing_jobs[job_id]['progress'] = 0
         print(f"Background processing error for job {job_id}: {str(e)}")
 
 def cleanup_old_jobs():
-    """Clean up old jobs and processed videos (runs periodically)"""
+    """Clean up old jobs and processed videos"""
     current_time = time.time()
     max_age = 3600  # 1 hour
     
-    # Clean up old processing jobs
     jobs_to_remove = []
     for job_id, job_data in processing_jobs.items():
         if current_time - job_data.get('created_at', 0) > max_age:
@@ -214,10 +243,12 @@ def cleanup_old_jobs():
     for job_id in jobs_to_remove:
         processing_jobs.pop(job_id, None)
         processed_videos.pop(job_id, None)
+        print(f"Cleaned up old job: {job_id}")
 
 @app.route('/upload', methods=['POST'])
 def upload_file():
     try:
+        # Check if file is present
         if 'video' not in request.files:
             return jsonify({'error': 'No video file provided'}), 400
         
@@ -227,13 +258,15 @@ def upload_file():
             return jsonify({'error': 'No file selected'}), 400
         
         if not allowed_file(file.filename):
-            return jsonify({'error': 'Invalid file type'}), 400
+            return jsonify({'error': f'Invalid file type. Supported formats: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
         
         # Read file data into memory
         video_data = file.read()
         
         if len(video_data) == 0:
-            return jsonify({'error': 'Empty file'}), 400
+            return jsonify({'error': 'Empty file uploaded'}), 400
+        
+        print(f"Received file: {file.filename}, size: {len(video_data)} bytes")
         
         # Generate unique job ID
         job_id = str(uuid.uuid4())
@@ -241,9 +274,11 @@ def upload_file():
         # Initialize job status
         processing_jobs[job_id] = {
             'status': JobStatus.PENDING,
-            'message': 'Video uploaded, processing will start shortly',
+            'message': 'Video uploaded successfully, processing will start shortly',
+            'progress': 0,
             'created_at': time.time(),
-            'original_filename': file.filename
+            'original_filename': file.filename,
+            'file_size': len(video_data)
         }
         
         # Start background processing
@@ -254,15 +289,19 @@ def upload_file():
         thread.daemon = True
         thread.start()
         
+        print(f"Started processing job: {job_id}")
+        
         # Return job ID immediately
         return jsonify({
             'job_id': job_id,
             'status': JobStatus.PENDING,
             'message': 'Video uploaded successfully. Processing started.',
-            'status_url': f'/status/{job_id}'
+            'status_url': f'/status/{job_id}',
+            'progress': 0
         }), 202
         
     except Exception as e:
+        print(f"Upload error: {str(e)}")
         return jsonify({'error': f'Upload failed: {str(e)}'}), 500
 
 @app.route('/status/<job_id>')
@@ -273,49 +312,63 @@ def check_status(job_id):
     
     job_data = processing_jobs[job_id].copy()
     
-    # Add estimated time remaining for processing jobs
+    # Add timing information
+    elapsed = time.time() - job_data['created_at']
+    job_data['elapsed_seconds'] = int(elapsed)
+    
+    # Estimate remaining time for processing jobs
     if job_data['status'] == JobStatus.PROCESSING:
-        elapsed = time.time() - job_data['created_at']
-        job_data['elapsed_seconds'] = int(elapsed)
-        job_data['estimated_total_seconds'] = 120  # Rough estimate
+        progress = job_data.get('progress', 0)
+        if progress > 0:
+            estimated_total = (elapsed / progress) * 100
+            remaining = max(0, estimated_total - elapsed)
+            job_data['estimated_remaining_seconds'] = int(remaining)
     
     return jsonify(job_data)
 
 @app.route('/download/<job_id>')
 def download_video(job_id):
     """Download the processed video"""
+    print(f"Download request for job: {job_id}")
+    
     if job_id not in processed_videos:
         if job_id in processing_jobs:
             status = processing_jobs[job_id]['status']
             if status == JobStatus.PROCESSING:
-                return jsonify({'error': 'Video still processing'}), 202
+                return jsonify({'error': 'Video still processing', 'status': 'processing'}), 202
             elif status == JobStatus.ERROR:
-                return jsonify({'error': 'Video processing failed'}), 500
+                error_msg = processing_jobs[job_id].get('message', 'Video processing failed')
+                return jsonify({'error': error_msg, 'status': 'error'}), 500
             else:
-                return jsonify({'error': 'Video not ready'}), 404
+                return jsonify({'error': 'Video not ready', 'status': status}), 404
         else:
             return jsonify({'error': 'Job not found'}), 404
     
     video_info = processed_videos[job_id]
+    print(f"Serving video: {video_info['filename']}, size: {video_info['size']} bytes")
     
-    def generate():
-        yield video_info['data']
-        # Clean up after download
+    # Create a BytesIO object from the video data
+    video_buffer = io.BytesIO(video_info['data'])
+    video_buffer.seek(0)
+    
+    def cleanup_after_download():
+        """Clean up after a short delay to ensure download completes"""
+        time.sleep(5)  # Wait 5 seconds
         processed_videos.pop(job_id, None)
         processing_jobs.pop(job_id, None)
+        print(f"Cleaned up job {job_id} after download")
     
-    response = Response(
-        generate(),
+    # Start cleanup in background
+    cleanup_thread = threading.Thread(target=cleanup_after_download)
+    cleanup_thread.daemon = True
+    cleanup_thread.start()
+    
+    return send_file(
+        video_buffer,
         mimetype='video/mp4',
-        headers={
-            'Content-Disposition': f'attachment; filename="{video_info["filename"]}"',
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
+        as_attachment=True,
+        download_name=video_info['filename']
     )
-    
-    return response
 
 @app.route('/jobs')
 def list_jobs():
@@ -330,6 +383,7 @@ def list_jobs():
 
 @app.route('/app-status')
 def app_status():
+    """Get application status"""
     cleanup_old_jobs()
     return jsonify({
         'status': 'running',
@@ -337,17 +391,30 @@ def app_status():
         'supported_formats': list(ALLOWED_EXTENSIONS),
         'max_file_size_mb': MAX_CONTENT_LENGTH // (1024 * 1024),
         'active_jobs': len(processing_jobs),
-        'completed_videos': len(processed_videos)
+        'completed_videos': len(processed_videos),
+        'server_time': time.time()
     })
 
 @app.route('/')
 def index():
+    """Serve the main HTML page"""
     return render_template('index.html')
+
+@app.errorhandler(413)
+def too_large(e):
+    return jsonify({'error': f'File too large. Maximum size is {MAX_CONTENT_LENGTH // (1024 * 1024)}MB'}), 413
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify({'error': 'Internal server error occurred'}), 500
 
 if __name__ == '__main__':
     print("Starting Async Phonk Video Processor...")
     print(f"Supported formats: {', '.join(ALLOWED_EXTENSIONS)}")
     print(f"Max file size: {MAX_CONTENT_LENGTH // (1024 * 1024)}MB")
-    print("Processing videos asynchronously - optimized for Vercel")
+    print("Processing videos asynchronously - optimized for deployment")
+    
+    # Create templates directory if it doesn't exist
+    os.makedirs('templates', exist_ok=True)
     
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
