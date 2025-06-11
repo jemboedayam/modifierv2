@@ -183,17 +183,24 @@ def background_process_video(job_id, video_data, original_filename):
         # Process the video
         processed_video_data = process_video_in_memory(video_data, original_filename)
         
+        # Convert to base64 for JSON response (for auto-download)
+        video_base64 = base64.b64encode(processed_video_data).decode('utf-8')
+        
         # Store the result
         processed_videos[job_id] = {
             'data': processed_video_data,
+            'data_base64': video_base64,  # For auto-download
             'filename': f"phonk_{original_filename.rsplit('.', 1)[0]}.mp4",
-            'created_at': time.time()
+            'created_at': time.time(),
+            'size_bytes': len(processed_video_data)
         }
         
         # Update job status
         processing_jobs[job_id]['status'] = JobStatus.COMPLETED
-        processing_jobs[job_id]['message'] = 'Video processing completed'
+        processing_jobs[job_id]['message'] = 'Video processing completed - ready for download'
         processing_jobs[job_id]['download_url'] = f'/download/{job_id}'
+        processing_jobs[job_id]['filename'] = f"phonk_{original_filename.rsplit('.', 1)[0]}.mp4"
+        processing_jobs[job_id]['size_bytes'] = len(processed_video_data)
         
     except Exception as e:
         processing_jobs[job_id]['status'] = JobStatus.ERROR
@@ -279,6 +286,11 @@ def check_status(job_id):
         job_data['elapsed_seconds'] = int(elapsed)
         job_data['estimated_total_seconds'] = 120  # Rough estimate
     
+    # If completed, include download info for auto-download
+    if job_data['status'] == JobStatus.COMPLETED and job_id in processed_videos:
+        job_data['ready_for_download'] = True
+        job_data['download_ready'] = True
+    
     return jsonify(job_data)
 
 @app.route('/download/<job_id>')
@@ -317,6 +329,38 @@ def download_video(job_id):
     
     return response
 
+@app.route('/download-auto/<job_id>')
+def download_video_auto(job_id):
+    """Auto-download endpoint that returns base64 data for immediate download"""
+    if job_id not in processed_videos:
+        if job_id in processing_jobs:
+            status = processing_jobs[job_id]['status']
+            if status == JobStatus.PROCESSING:
+                return jsonify({'error': 'Video still processing'}), 202
+            elif status == JobStatus.ERROR:
+                return jsonify({'error': 'Video processing failed'}), 500
+            else:
+                return jsonify({'error': 'Video not ready'}), 404
+        else:
+            return jsonify({'error': 'Job not found'}), 404
+    
+    video_info = processed_videos[job_id]
+    
+    # Return base64 data for client-side download
+    response_data = {
+        'status': 'ready',
+        'filename': video_info['filename'],
+        'size_bytes': video_info['size_bytes'],
+        'data': video_info['data_base64'],
+        'message': 'Video ready for download'
+    }
+    
+    # Clean up after providing download data
+    processed_videos.pop(job_id, None)
+    processing_jobs.pop(job_id, None)
+    
+    return jsonify(response_data)
+
 @app.route('/jobs')
 def list_jobs():
     """List all current jobs (for debugging)"""
@@ -324,7 +368,7 @@ def list_jobs():
     return jsonify({
         'processing_jobs': len(processing_jobs),
         'processed_videos': len(processed_videos),
-        'jobs': {job_id: {k:v for k,v in job_data.items() if k != 'data'} 
+        'jobs': {job_id: {k:v for k,v in job_data.items() if k not in ['data', 'data_base64']} 
                 for job_id, job_data in processing_jobs.items()}
     })
 
@@ -348,6 +392,6 @@ if __name__ == '__main__':
     print("Starting Async Phonk Video Processor...")
     print(f"Supported formats: {', '.join(ALLOWED_EXTENSIONS)}")
     print(f"Max file size: {MAX_CONTENT_LENGTH // (1024 * 1024)}MB")
-    print("Processing videos asynchronously - optimized for Vercel")
+    print("Processing videos asynchronously - optimized for Vercel with auto-download")
     
     app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)
