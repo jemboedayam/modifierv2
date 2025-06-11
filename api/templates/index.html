@@ -98,7 +98,7 @@
             display: none;
         }
         
-        .process-btn:hover {
+        .process-btn:hover:not(:disabled) {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
         }
@@ -124,9 +124,9 @@
         
         .progress-bar {
             width: 100%;
-            height: 6px;
+            height: 8px;
             background: rgba(255, 255, 255, 0.2);
-            border-radius: 3px;
+            border-radius: 4px;
             overflow: hidden;
             margin-bottom: 10px;
         }
@@ -135,7 +135,14 @@
             height: 100%;
             background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
             width: 0%;
-            transition: width 0.3s ease;
+            transition: width 0.5s ease;
+            border-radius: 4px;
+        }
+        
+        .progress-text {
+            font-size: 0.9em;
+            color: #ccc;
+            margin-bottom: 5px;
         }
         
         .download-btn {
@@ -155,6 +162,8 @@
         .download-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+            text-decoration: none;
+            color: white;
         }
         
         .error {
@@ -164,6 +173,7 @@
             border-radius: 10px;
             margin: 10px 0;
             display: none;
+            border: 1px solid rgba(255, 107, 107, 0.5);
         }
         
         .success {
@@ -173,6 +183,7 @@
             border-radius: 10px;
             margin: 10px 0;
             display: none;
+            border: 1px solid rgba(78, 205, 196, 0.5);
         }
         
         .file-info {
@@ -181,6 +192,7 @@
             border-radius: 10px;
             margin: 10px 0;
             display: none;
+            text-align: left;
         }
         
         .reset-btn {
@@ -192,15 +204,51 @@
             cursor: pointer;
             margin: 10px;
             transition: all 0.3s ease;
+            font-size: 0.9em;
         }
         
         .reset-btn:hover {
             border-color: #4ecdc4;
             color: #4ecdc4;
         }
+        
+        .connection-status {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 5px 10px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            background: rgba(0, 0, 0, 0.5);
+        }
+        
+        .connection-status.connected {
+            color: #4ecdc4;
+        }
+        
+        .connection-status.disconnected {
+            color: #ff6b6b;
+        }
+        
+        .loading-spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top-color: #4ecdc4;
+            animation: spin 1s ease-in-out infinite;
+            margin-right: 10px;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
     </style>
 </head>
 <body>
+    <div class="connection-status" id="connectionStatus">🔴 Checking connection...</div>
+    
     <div class="container">
         <h1>🎵 PHONK PROCESSOR</h1>
         <p class="subtitle">Transform your videos with phonk vibes - Now with async processing!</p>
@@ -213,18 +261,20 @@
         </div>
         
         <div class="file-info" id="fileInfo">
-            <strong>Selected:</strong> <span id="fileName"></span><br>
-            <strong>Size:</strong> <span id="fileSize"></span>
+            <strong>Selected File:</strong> <span id="fileName"></span><br>
+            <strong>Size:</strong> <span id="fileSize"></span><br>
+            <strong>Type:</strong> <span id="fileType"></span>
         </div>
         
         <button class="process-btn" id="processBtn">🚀 Start Processing</button>
         
         <div class="status-area" id="statusArea">
-            <div class="status-text" id="statusText">Processing...</div>
+            <div class="progress-text" id="progressText">0% Complete</div>
             <div class="progress-bar">
                 <div class="progress-fill" id="progressFill"></div>
             </div>
-            <div id="timeInfo" style="font-size: 0.9em; color: #ccc;"></div>
+            <div class="status-text" id="statusText">Processing...</div>
+            <div id="timeInfo" style="font-size: 0.9em; color: #ccc; margin-top: 10px;"></div>
         </div>
         
         <div class="error" id="errorMsg"></div>
@@ -239,31 +289,74 @@
         let currentJobId = null;
         let statusInterval = null;
         let selectedFile = null;
+        let isConnected = false;
 
+        // DOM elements
+        const connectionStatus = document.getElementById('connectionStatus');
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const fileInfo = document.getElementById('fileInfo');
         const fileName = document.getElementById('fileName');
         const fileSize = document.getElementById('fileSize');
+        const fileType = document.getElementById('fileType');
         const processBtn = document.getElementById('processBtn');
         const statusArea = document.getElementById('statusArea');
         const statusText = document.getElementById('statusText');
         const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
         const timeInfo = document.getElementById('timeInfo');
         const errorMsg = document.getElementById('errorMsg');
         const successMsg = document.getElementById('successMsg');
         const downloadBtn = document.getElementById('downloadBtn');
         const resetBtn = document.getElementById('resetBtn');
 
+        // Check server connection
+        async function checkConnection() {
+            try {
+                const response = await fetch('/app-status', { 
+                    method: 'GET',
+                    signal: AbortSignal.timeout(5000)
+                });
+                
+                if (response.ok) {
+                    const status = await response.json();
+                    isConnected = true;
+                    connectionStatus.textContent = '🟢 Connected';
+                    connectionStatus.className = 'connection-status connected';
+                    console.log('Server status:', status);
+                } else {
+                    throw new Error('Server not responding properly');
+                }
+            } catch (error) {
+                isConnected = false;
+                connectionStatus.textContent = '🔴 Disconnected';
+                connectionStatus.className = 'connection-status disconnected';
+                console.error('Connection check failed:', error);
+            }
+        }
+
+        // Check connection on load and periodically
+        checkConnection();
+        setInterval(checkConnection, 30000); // Check every 30 seconds
+
         // File upload handling
-        uploadArea.addEventListener('click', () => fileInput.click());
+        uploadArea.addEventListener('click', () => {
+            if (!isConnected) {
+                showError('Server connection lost. Please wait...');
+                return;
+            }
+            fileInput.click();
+        });
+
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('dragover');
         });
+
         uploadArea.addEventListener('dragleave', () => {
             uploadArea.classList.remove('dragover');
         });
+
         uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadArea.classList.remove('dragover');
@@ -280,11 +373,30 @@
         });
 
         function handleFileSelect(file) {
+            // Validate file
+            const maxSize = 100 * 1024 * 1024; // 100MB
+            const allowedTypes = ['video/mp4', 'video/avi', 'video/mov', 'video/quicktime', 'video/x-msvideo', 'video/webm', 'video/x-matroska'];
+            
+            if (file.size > maxSize) {
+                showError('File too large! Maximum size is 100MB.');
+                return;
+            }
+            
+            if (!allowedTypes.includes(file.type)) {
+                showError('Invalid file type! Please select a video file (MP4, AVI, MOV, MKV, WEBM).');
+                return;
+            }
+            
             selectedFile = file;
+            
+            // Display file info
             fileName.textContent = file.name;
             fileSize.textContent = formatFileSize(file.size);
+            fileType.textContent = file.type || 'Unknown';
+            
             fileInfo.style.display = 'block';
             processBtn.style.display = 'inline-block';
+            
             hideMessages();
         }
 
@@ -294,11 +406,6 @@
             const sizes = ['Bytes', 'KB', 'MB', 'GB'];
             const i = Math.floor(Math.log(bytes) / Math.log(k));
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-
-        function hideMessages() {
-            errorMsg.style.display = 'none';
-            successMsg.style.display = 'none';
         }
 
         function showError(message) {
@@ -313,18 +420,33 @@
             errorMsg.style.display = 'none';
         }
 
-        // Process video
+        function hideMessages() {
+            errorMsg.style.display = 'none';
+            successMsg.style.display = 'none';
+        }
+
+        // Process button handler
         processBtn.addEventListener('click', async () => {
-            if (!selectedFile) return;
+            if (!selectedFile) {
+                showError('Please select a video file first.');
+                return;
+            }
 
-            const formData = new FormData();
-            formData.append('video', selectedFile);
-
-            processBtn.disabled = true;
-            processBtn.textContent = '⏳ Uploading...';
-            hideMessages();
+            if (!isConnected) {
+                showError('Server connection lost. Please wait for reconnection.');
+                return;
+            }
 
             try {
+                processBtn.disabled = true;
+                processBtn.innerHTML = '<div class="loading-spinner"></div>Uploading...';
+                hideMessages();
+
+                // Create form data
+                const formData = new FormData();
+                formData.append('video', selectedFile);
+
+                // Upload file
                 const response = await fetch('/upload', {
                     method: 'POST',
                     body: formData
@@ -332,99 +454,132 @@
 
                 const result = await response.json();
 
-                if (response.ok) {
-                    currentJobId = result.job_id;
-                    showSuccess('Video uploaded successfully! Processing started...');
-                    statusArea.style.display = 'block';
-                    processBtn.style.display = 'none';
-                    resetBtn.style.display = 'inline-block';
-                    
-                    // Start polling for status
-                    startStatusPolling();
-                } else {
+                if (!response.ok) {
                     throw new Error(result.error || 'Upload failed');
                 }
+
+                // Start monitoring the job
+                currentJobId = result.job_id;
+                startStatusMonitoring();
+                
+                showSuccess('Video uploaded successfully! Processing started...');
+                
             } catch (error) {
-                showError('Upload failed: ' + error.message);
-                processBtn.disabled = false;
-                processBtn.textContent = '🚀 Start Processing';
+                console.error('Upload error:', error);
+                showError(`Upload failed: ${error.message}`);
+                resetProcessButton();
             }
         });
 
-        function startStatusPolling() {
-            if (statusInterval) clearInterval(statusInterval);
-            
-            statusInterval = setInterval(async () => {
-                try {
-                    const response = await fetch(`/status/${currentJobId}`);
-                    const status = await response.json();
+        function resetProcessButton() {
+            processBtn.disabled = false;
+            processBtn.innerHTML = '🚀 Start Processing';
+        }
 
-                    if (response.ok) {
-                        updateStatus(status);
-                        
-                        if (status.status === 'completed') {
-                            clearInterval(statusInterval);
-                            showDownloadButton(status.download_url);
-                        } else if (status.status === 'error') {
-                            clearInterval(statusInterval);
-                            showError(status.message || 'Processing failed');
-                            resetBtn.style.display = 'inline-block';
-                        }
-                    } else {
-                        throw new Error(status.error || 'Status check failed');
-                    }
-                } catch (error) {
-                    console.error('Status polling error:', error);
-                    showError('Failed to check processing status');
-                    clearInterval(statusInterval);
+        function startStatusMonitoring() {
+            statusArea.style.display = 'block';
+            processBtn.style.display = 'none';
+            
+            // Clear any existing interval
+            if (statusInterval) {
+                clearInterval(statusInterval);
+            }
+            
+            // Start polling for status
+            statusInterval = setInterval(checkJobStatus, 2000); // Check every 2 seconds
+            
+            // Check immediately
+            checkJobStatus();
+        }
+
+        async function checkJobStatus() {
+            if (!currentJobId) return;
+            
+            try {
+                const response = await fetch(`/status/${currentJobId}`);
+                
+                if (!response.ok) {
+                    throw new Error('Failed to get status');
                 }
-            }, 2000); // Poll every 2 seconds
-        }
-
-        function updateStatus(status) {
-            statusText.textContent = status.message || 'Processing...';
-            
-            // Update progress based on status
-            let progress = 0;
-            switch (status.status) {
-                case 'pending':
-                    progress = 10;
-                    break;
-                case 'processing':
-                    // Estimate progress based on elapsed time
-                    const elapsed = status.elapsed_seconds || 0;
-                    const estimated = status.estimated_total_seconds || 120;
-                    progress = Math.min(90, 20 + (elapsed / estimated) * 70);
-                    break;
-                case 'completed':
-                    progress = 100;
-                    break;
-                case 'error':
-                    progress = 0;
-                    break;
-            }
-            
-            progressFill.style.width = progress + '%';
-            
-            // Show time info for processing status
-            if (status.status === 'processing' && status.elapsed_seconds) {
-                const minutes = Math.floor(status.elapsed_seconds / 60);
-                const seconds = status.elapsed_seconds % 60;
-                timeInfo.textContent = `Processing for ${minutes}m ${seconds}s...`;
-            } else {
-                timeInfo.textContent = '';
+                
+                const status = await response.json();
+                updateStatusDisplay(status);
+                
+                // Handle completed or error states
+                if (status.status === 'completed') {
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                    handleProcessingComplete(status);
+                } else if (status.status === 'error') {
+                    clearInterval(statusInterval);
+                    statusInterval = null;
+                    handleProcessingError(status);
+                }
+                
+            } catch (error) {
+                console.error('Status check error:', error);
+                // Continue polling unless it's a critical error
             }
         }
 
-        function showDownloadButton(downloadUrl) {
-            statusText.textContent = '✅ Processing completed!';
-            progressFill.style.width = '100%';
-            downloadBtn.href = downloadUrl;
+        function updateStatusDisplay(status) {
+            const progress = status.progress || 0;
+            const message = status.message || 'Processing...';
+            
+            // Update progress bar
+            progressFill.style.width = `${progress}%`;
+            progressText.textContent = `${progress}% Complete`;
+            
+            // Update status message
+            statusText.textContent = message;
+            
+            // Update timing information
+            let timeText = '';
+            if (status.elapsed_seconds) {
+                timeText = `Elapsed: ${formatTime(status.elapsed_seconds)}`;
+                
+                if (status.estimated_remaining_seconds) {
+                    timeText += ` | Remaining: ~${formatTime(status.estimated_remaining_seconds)}`;
+                }
+            }
+            timeInfo.textContent = timeText;
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        }
+
+        function handleProcessingComplete(status) {
+            showSuccess('Video processing completed successfully!');
+            
+            // Set up download button
+            downloadBtn.href = status.download_url || `/download/${currentJobId}`;
             downloadBtn.style.display = 'inline-block';
-            showSuccess('Your phonk video is ready for download!');
+            
+            // Show reset button
+            resetBtn.style.display = 'inline-block';
+            
+            // Update final status
+            progressFill.style.width = '100%';
+            progressText.textContent = '100% Complete';
+            statusText.innerHTML = '✅ Processing completed! Ready for download.';
         }
 
-        // Reset function
+        function handleProcessingError(status) {
+            showError(`Processing failed: ${status.message || 'Unknown error'}`);
+            
+            // Show reset button
+            resetBtn.style.display = 'inline-block';
+            
+            // Update status display
+            progressFill.style.width = '0%';
+            progressText.textContent = 'Processing failed';
+            statusText.innerHTML = '❌ Processing failed. Please try again.';
+        }
+
+        // Reset button handler
         resetBtn.addEventListener('click', () => {
             // Clear current job
             if (statusInterval) {
@@ -435,24 +590,39 @@
             selectedFile = null;
             
             // Reset UI
-            fileInput.value = '';
             fileInfo.style.display = 'none';
-            processBtn.style.display = 'none';
-            processBtn.disabled = false;
-            processBtn.textContent = '🚀 Start Processing';
             statusArea.style.display = 'none';
             downloadBtn.style.display = 'none';
             resetBtn.style.display = 'none';
+            processBtn.style.display = 'none';
+            
+            // Reset form
+            fileInput.value = '';
+            
+            // Reset progress
             progressFill.style.width = '0%';
+            progressText.textContent = '0% Complete';
+            statusText.textContent = 'Processing...';
+            timeInfo.textContent = '';
+            
             hideMessages();
+            resetProcessButton();
         });
 
-        // Download button cleanup
-        downloadBtn.addEventListener('click', () => {
-            setTimeout(() => {
-                resetBtn.click(); // Auto-reset after download
-            }, 1000);
+        // Download button click handler
+        downloadBtn.addEventListener('click', (e) => {
+            // Let the browser handle the download
+            showSuccess('Download started! The file will be saved to your downloads folder.');
         });
+
+        // Handle page unload
+        window.addEventListener('beforeunload', () => {
+            if (statusInterval) {
+                clearInterval(statusInterval);
+            }
+        });
+
+        console.log('Phonk Video Processor initialized');
     </script>
 </body>
 </html>
