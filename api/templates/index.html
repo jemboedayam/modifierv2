@@ -1,416 +1,4 @@
-from flask import Flask, request, jsonify, Response, render_template_string
-from flask_cors import CORS
-import numpy as np
-from moviepy import VideoFileClip
-import tempfile
-import os
-import threading
-import time
-import uuid
-import base64
-import json
-
-app = Flask(__name__)
-CORS(app)
-
-# Configuration
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100MB limit
-ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'webm'}
-MOBILE_MAX_RESOLUTION = (1080, 1920)
-
-app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
-
-# In-memory storage for processing status and results
-processing_jobs = {}
-processed_videos = {}
-
-class JobStatus:
-    PENDING = "pending"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    ERROR = "error"
-
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
-def apply_phonk_effects(frame):
-    """Apply phonk-style visual effects to frame"""
-    frame = frame.astype(np.float32)
-    
-    # Increase contrast
-    contrast = 1.3
-    frame = ((frame - 128) * contrast + 128)
-    
-    # Boost saturation
-    gray = np.dot(frame[...,:3], [0.299, 0.587, 0.114])
-    gray = np.expand_dims(gray, axis=2)
-    frame[...,:3] = gray + (frame[...,:3] - gray) * 1.25
-    
-    # Add purple/pink tint
-    frame[..., 0] += 8   # Red
-    frame[..., 2] += 12  # Blue
-    
-    # Simple vignette effect
-    h, w = frame.shape[:2]
-    center_x, center_y = w // 2, h // 2
-    
-    y_indices, x_indices = np.ogrid[:h, :w]
-    distances = np.sqrt((x_indices - center_x)**2 + (y_indices - center_y)**2)
-    max_distance = np.sqrt(center_x**2 + center_y**2)
-    
-    normalized_distances = distances / max_distance
-    vignette_strength = 0.4
-    vignette_mask = 1 - (normalized_distances * vignette_strength)
-    vignette_mask = np.expand_dims(vignette_mask, axis=2)
-    
-    frame = frame * vignette_mask
-    frame = np.clip(frame, 0, 255)
-    
-    return frame.astype(np.uint8)
-
-def process_video_in_memory(video_data, original_filename, job_id):
-    """Process video entirely in memory using /tmp directory for Vercel"""
-    
-    # Create temporary files in /tmp directory (required for Vercel)
-    temp_dir = '/tmp' if os.path.exists('/tmp') else tempfile.gettempdir()
-    
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=temp_dir) as temp_input:
-        temp_input.write(video_data)
-        temp_input_path = temp_input.name
-    
-    with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False, dir=temp_dir) as temp_output:
-        temp_output_path = temp_output.name
-    
-    try:
-        # Set environment variables for MoviePy
-        os.environ['TMPDIR'] = temp_dir
-        os.environ['TEMP'] = temp_dir
-        os.environ['TMP'] = temp_dir
-        
-        # Update job status to processing
-        if job_id in processing_jobs:
-            processing_jobs[job_id]['status'] = JobStatus.PROCESSING
-            processing_jobs[job_id]['message'] = 'Loading video...'
-        
-        # Load video
-        clip = VideoFileClip(temp_input_path)
-        
-        # Update status
-        if job_id in processing_jobs:
-            processing_jobs[job_id]['message'] = 'Optimizing for mobile...'
-        
-        # Optimize for mobile
-        w, h = clip.size
-        max_w, max_h = MOBILE_MAX_RESOLUTION
-        
-        if w > max_w or h > max_h:
-            ratio_w = max_w / w
-            ratio_h = max_h / h
-            ratio = min(ratio_w, ratio_h)
-            
-            new_w = int(w * ratio)
-            new_h = int(h * ratio)
-            
-            # Ensure even dimensions
-            new_w = new_w if new_w % 2 == 0 else new_w - 1
-            new_h = new_h if new_h % 2 == 0 else new_h - 1
-            
-            clip = clip.resized((new_w, new_h))
-        
-        # Update status
-        if job_id in processing_jobs:
-            processing_jobs[job_id]['message'] = 'Applying phonk effects...'
-        
-        def transform_frame(get_frame, t):
-            """Transform each frame with phonk effects"""
-            fade_duration = 3.0
-            
-            # Reverse playback
-            reverse_t = clip.duration - t - 1/clip.fps
-            reverse_t = max(0, min(reverse_t, clip.duration - 1/clip.fps))
-            
-            frame = get_frame(reverse_t)
-            mirrored_frame = np.fliplr(frame)  # Mirror horizontally
-            
-            # Apply phonk effects
-            phonk_frame = apply_phonk_effects(mirrored_frame)
-            
-            # Add flicker effect
-            flicker_intensity = 0.97 + 0.03 * np.sin(t * 25)
-            phonk_frame = (phonk_frame * flicker_intensity).astype(np.uint8)
-            
-            # Apply fade in
-            if t < fade_duration:
-                alpha = t / fade_duration
-                return (phonk_frame * alpha).astype(np.uint8)
-            else:
-                return phonk_frame
-        
-        # Apply transformation
-        final_clip = clip.transform(transform_frame)
-        
-        # Apply audio effects
-        if clip.audio is not None:
-            if job_id in processing_jobs:
-                processing_jobs[job_id]['message'] = 'Processing audio...'
-            audio = clip.audio.with_volume_scaled(0.85)
-            final_clip = final_clip.with_audio(audio)
-        
-        # Update status
-        if job_id in processing_jobs:
-            processing_jobs[job_id]['message'] = 'Rendering final video...'
-        
-        # Write to temporary output file
-        temp_audio_file = f'{temp_dir}/temp_audio_{job_id}.m4a'
-        final_clip.write_videofile(
-            temp_output_path,
-            codec="libx264",
-            audio_codec="aac",
-            preset="fast",
-            threads=2,
-            bitrate="1500k",
-            audio_bitrate="128k",
-            logger=None,
-            temp_audiofile=temp_audio_file
-        )
-        
-        # Read processed video into memory
-        with open(temp_output_path, 'rb') as f:
-            processed_video_data = f.read()
-        
-        # Clean up clips
-        clip.close()
-        final_clip.close()
-        
-        return processed_video_data
-        
-    finally:
-        # Clean up temporary files
-        try:
-            if os.path.exists(temp_input_path):
-                os.unlink(temp_input_path)
-            if os.path.exists(temp_output_path):
-                os.unlink(temp_output_path)
-            temp_audio_path = f'{temp_dir}/temp_audio_{job_id}.m4a'
-            if os.path.exists(temp_audio_path):
-                os.unlink(temp_audio_path)
-        except Exception as cleanup_error:
-            print(f"Cleanup warning: {cleanup_error}")
-
-def background_process_video(job_id, video_data, original_filename):
-    """Process video in background thread"""
-    try:
-        processing_jobs[job_id]['status'] = JobStatus.PROCESSING
-        processing_jobs[job_id]['message'] = 'Starting video processing...'
-        processing_jobs[job_id]['progress'] = 10
-        
-        # Process the video
-        processed_video_data = process_video_in_memory(video_data, original_filename, job_id)
-        
-        # Store the result
-        output_filename = f"phonk_{original_filename.rsplit('.', 1)[0]}.mp4"
-        processed_videos[job_id] = {
-            'data': processed_video_data,
-            'filename': output_filename,
-            'created_at': time.time(),
-            'size_bytes': len(processed_video_data)
-        }
-        
-        # Update job status
-        processing_jobs[job_id]['status'] = JobStatus.COMPLETED
-        processing_jobs[job_id]['message'] = 'Video processing completed successfully!'
-        processing_jobs[job_id]['progress'] = 100
-        processing_jobs[job_id]['download_url'] = f'/download/{job_id}'
-        processing_jobs[job_id]['filename'] = output_filename
-        processing_jobs[job_id]['size_bytes'] = len(processed_video_data)
-        
-    except Exception as e:
-        processing_jobs[job_id]['status'] = JobStatus.ERROR
-        processing_jobs[job_id]['message'] = f'Processing failed: {str(e)}'
-        processing_jobs[job_id]['progress'] = 0
-        print(f"Background processing error for job {job_id}: {str(e)}")
-
-def cleanup_old_jobs():
-    """Clean up old jobs and processed videos (runs periodically)"""
-    current_time = time.time()
-    max_age = 3600  # 1 hour
-    
-    # Clean up old processing jobs
-    jobs_to_remove = []
-    for job_id, job_data in processing_jobs.items():
-        if current_time - job_data.get('created_at', 0) > max_age:
-            jobs_to_remove.append(job_id)
-    
-    for job_id in jobs_to_remove:
-        processing_jobs.pop(job_id, None)
-        processed_videos.pop(job_id, None)
-
-@app.errorhandler(413)
-def too_large(e):
-    return jsonify({'error': 'File too large. Maximum size is 100MB.'}), 413
-
-@app.errorhandler(Exception)
-def handle_exception(e):
-    return jsonify({'error': f'Server error: {str(e)}'}), 500
-
-@app.route('/upload', methods=['POST'])
-def upload_file():
-    try:
-        # Check if file is present
-        if 'video' not in request.files:
-            return jsonify({'error': 'No video file provided'}), 400
-        
-        file = request.files['video']
-        
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-        
-        if not allowed_file(file.filename):
-            return jsonify({
-                'error': f'Invalid file type. Supported formats: {", ".join(ALLOWED_EXTENSIONS)}'
-            }), 400
-        
-        # Read file data into memory
-        video_data = file.read()
-        
-        if len(video_data) == 0:
-            return jsonify({'error': 'Empty file'}), 400
-        
-        if len(video_data) > MAX_CONTENT_LENGTH:
-            return jsonify({'error': 'File too large. Maximum size is 100MB.'}), 413
-        
-        # Generate unique job ID
-        job_id = str(uuid.uuid4())
-        
-        # Initialize job status
-        processing_jobs[job_id] = {
-            'status': JobStatus.PENDING,
-            'message': 'Video uploaded successfully. Processing will start shortly...',
-            'progress': 5,
-            'created_at': time.time(),
-            'original_filename': file.filename,
-            'file_size': len(video_data)
-        }
-        
-        # Start background processing
-        thread = threading.Thread(
-            target=background_process_video,
-            args=(job_id, video_data, file.filename),
-            daemon=True
-        )
-        thread.start()
-        
-        # Return job ID immediately
-        return jsonify({
-            'job_id': job_id,
-            'status': JobStatus.PENDING,
-            'message': 'Video uploaded successfully. Processing started.',
-            'status_url': f'/status/{job_id}'
-        }), 202
-        
-    except Exception as e:
-        print(f"Upload error: {str(e)}")
-        return jsonify({'error': f'Upload failed: {str(e)}'}), 500
-
-@app.route('/status/<job_id>')
-def check_status(job_id):
-    """Check the status of a processing job"""
-    if job_id not in processing_jobs:
-        return jsonify({'error': 'Job not found'}), 404
-    
-    job_data = processing_jobs[job_id].copy()
-    
-    # Add estimated time remaining for processing jobs
-    if job_data['status'] == JobStatus.PROCESSING:
-        elapsed = time.time() - job_data['created_at']
-        job_data['elapsed_seconds'] = int(elapsed)
-        job_data['estimated_total_seconds'] = 120  # Rough estimate
-        
-        # Calculate progress based on elapsed time if not set
-        if 'progress' not in job_data:
-            estimated_progress = min(90, 20 + (elapsed / 120) * 70)
-            job_data['progress'] = int(estimated_progress)
-    
-    # If completed, include download info
-    if job_data['status'] == JobStatus.COMPLETED and job_id in processed_videos:
-        job_data['ready_for_download'] = True
-    
-    return jsonify(job_data)
-
-@app.route('/download/<job_id>')
-def download_video(job_id):
-    """Download the processed video"""
-    if job_id not in processed_videos:
-        if job_id in processing_jobs:
-            status = processing_jobs[job_id]['status']
-            if status == JobStatus.PROCESSING:
-                return jsonify({'error': 'Video still processing', 'status': 'processing'}), 202
-            elif status == JobStatus.ERROR:
-                return jsonify({'error': 'Video processing failed', 'status': 'error'}), 500
-            else:
-                return jsonify({'error': 'Video not ready', 'status': status}), 404
-        else:
-            return jsonify({'error': 'Job not found'}), 404
-    
-    video_info = processed_videos[job_id]
-    
-    def generate():
-        yield video_info['data']
-        # Clean up after download (delayed to ensure download completes)
-        def cleanup_after_delay():
-            time.sleep(5)  # Wait 5 seconds before cleanup
-            processed_videos.pop(job_id, None)
-            processing_jobs.pop(job_id, None)
-        
-        cleanup_thread = threading.Thread(target=cleanup_after_delay, daemon=True)
-        cleanup_thread.start()
-    
-    response = Response(
-        generate(),
-        mimetype='video/mp4',
-        headers={
-            'Content-Disposition': f'attachment; filename="{video_info["filename"]}"',
-            'Content-Length': str(len(video_info['data'])),
-            'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Pragma': 'no-cache',
-            'Expires': '0'
-        }
-    )
-    
-    return response
-
-@app.route('/jobs')
-def list_jobs():
-    """List all current jobs (for debugging)"""
-    cleanup_old_jobs()
-    return jsonify({
-        'processing_jobs': len(processing_jobs),
-        'processed_videos': len(processed_videos),
-        'jobs': {job_id: {k: v for k, v in job_data.items() if k not in ['data']} 
-                for job_id, job_data in processing_jobs.items()}
-    })
-
-@app.route('/health')
-def health_check():
-    """Health check endpoint"""
-    return jsonify({'status': 'healthy', 'timestamp': time.time()})
-
-@app.route('/app-status')
-def app_status():
-    """Application status endpoint"""
-    cleanup_old_jobs()
-    return jsonify({
-        'status': 'running',
-        'message': 'Async Phonk video processor is ready',
-        'supported_formats': list(ALLOWED_EXTENSIONS),
-        'max_file_size_mb': MAX_CONTENT_LENGTH // (1024 * 1024),
-        'active_jobs': len(processing_jobs),
-        'completed_videos': len(processed_videos),
-        'timestamp': time.time()
-    })
-
-# HTML template embedded in Python
-HTML_TEMPLATE = '''<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -510,7 +98,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             display: none;
         }
         
-        .process-btn:hover:not(:disabled) {
+        .process-btn:hover {
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
         }
@@ -610,29 +198,9 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             border-color: #4ecdc4;
             color: #4ecdc4;
         }
-        
-        .connection-status {
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            padding: 8px 12px;
-            border-radius: 15px;
-            font-size: 0.8em;
-            background: rgba(78, 205, 196, 0.2);
-            color: #4ecdc4;
-            border: 1px solid #4ecdc4;
-        }
-        
-        .connection-status.offline {
-            background: rgba(255, 107, 107, 0.2);
-            color: #ff6b6b;
-            border-color: #ff6b6b;
-        }
     </style>
 </head>
 <body>
-    <div class="connection-status" id="connectionStatus">🟢 Connected</div>
-    
     <div class="container">
         <h1>🎵 PHONK PROCESSOR</h1>
         <p class="subtitle">Transform your videos with phonk vibes - Now with async processing!</p>
@@ -686,43 +254,16 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         const successMsg = document.getElementById('successMsg');
         const downloadBtn = document.getElementById('downloadBtn');
         const resetBtn = document.getElementById('resetBtn');
-        const connectionStatus = document.getElementById('connectionStatus');
-
-        // Check server connection
-        async function checkConnection() {
-            try {
-                const response = await fetch('/health', {
-                    method: 'GET',
-                    headers: { 'Cache-Control': 'no-cache' }
-                });
-                if (response.ok) {
-                    connectionStatus.textContent = '🟢 Connected';
-                    connectionStatus.classList.remove('offline');
-                } else {
-                    throw new Error('Server not responding');
-                }
-            } catch (error) {
-                connectionStatus.textContent = '🔴 Offline';
-                connectionStatus.classList.add('offline');
-            }
-        }
-
-        // Check connection on load and periodically
-        checkConnection();
-        setInterval(checkConnection, 30000); // Every 30 seconds
 
         // File upload handling
         uploadArea.addEventListener('click', () => fileInput.click());
-        
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('dragover');
         });
-        
         uploadArea.addEventListener('dragleave', () => {
             uploadArea.classList.remove('dragover');
         });
-        
         uploadArea.addEventListener('drop', (e) => {
             e.preventDefault();
             uploadArea.classList.remove('dragover');
@@ -739,19 +280,6 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         });
 
         function handleFileSelect(file) {
-            // Validate file type
-            const allowedTypes = ['video/mp4', 'video/avi', 'video/mov', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska', 'video/webm'];
-            if (!allowedTypes.includes(file.type) && !file.name.match(/\\.(mp4|avi|mov|mkv|webm)$/i)) {
-                showError('Invalid file type. Please select a video file.');
-                return;
-            }
-
-            // Validate file size (100MB)
-            if (file.size > 100 * 1024 * 1024) {
-                showError('File too large. Maximum size is 100MB.');
-                return;
-            }
-
             selectedFile = file;
             fileName.textContent = file.name;
             fileSize.textContent = formatFileSize(file.size);
@@ -787,10 +315,7 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
 
         // Process video
         processBtn.addEventListener('click', async () => {
-            if (!selectedFile) {
-                showError('Please select a video file first.');
-                return;
-            }
+            if (!selectedFile) return;
 
             const formData = new FormData();
             formData.append('video', selectedFile);
@@ -816,48 +341,41 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
                     
                     // Start polling for status
                     startStatusPolling();
-                }  else {
+                } else {
                     throw new Error(result.error || 'Upload failed');
                 }
             } catch (error) {
-                showError(`Upload failed: ${error.message}`);
+                showError('Upload failed: ' + error.message);
                 processBtn.disabled = false;
                 processBtn.textContent = '🚀 Start Processing';
             }
         });
 
-        // Status polling
         function startStatusPolling() {
-            if (statusInterval) {
-                clearInterval(statusInterval);
-            }
+            if (statusInterval) clearInterval(statusInterval);
             
             statusInterval = setInterval(async () => {
-                if (!currentJobId) return;
-                
                 try {
-                    const response = await fetch(`/status/${currentJobId}`, {
-                        headers: { 'Cache-Control': 'no-cache' }
-                    });
+                    const response = await fetch(`/status/${currentJobId}`);
                     const status = await response.json();
-                    
+
                     if (response.ok) {
                         updateStatus(status);
                         
                         if (status.status === 'completed') {
                             clearInterval(statusInterval);
-                            handleCompletion(status);
+                            showDownloadButton(status.download_url);
                         } else if (status.status === 'error') {
                             clearInterval(statusInterval);
                             showError(status.message || 'Processing failed');
-                            resetForm();
+                            resetBtn.style.display = 'inline-block';
                         }
                     } else {
                         throw new Error(status.error || 'Status check failed');
                     }
                 } catch (error) {
                     console.error('Status polling error:', error);
-                    showError(`Status check failed: ${error.message}`);
+                    showError('Failed to check processing status');
                     clearInterval(statusInterval);
                 }
             }, 2000); // Poll every 2 seconds
@@ -866,77 +384,57 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
         function updateStatus(status) {
             statusText.textContent = status.message || 'Processing...';
             
-            // Update progress bar
-            let progress = status.progress || 0;
-            
-            // Calculate progress based on elapsed time if not provided
-            if (status.status === 'processing' && !status.progress) {
-                const elapsed = status.elapsed_seconds || 0;
-                const estimated = status.estimated_total_seconds || 120;
-                progress = Math.min(90, (elapsed / estimated) * 100);
+            // Update progress based on status
+            let progress = 0;
+            switch (status.status) {
+                case 'pending':
+                    progress = 10;
+                    break;
+                case 'processing':
+                    // Estimate progress based on elapsed time
+                    const elapsed = status.elapsed_seconds || 0;
+                    const estimated = status.estimated_total_seconds || 120;
+                    progress = Math.min(90, 20 + (elapsed / estimated) * 70);
+                    break;
+                case 'completed':
+                    progress = 100;
+                    break;
+                case 'error':
+                    progress = 0;
+                    break;
             }
             
-            progressFill.style.width = `${progress}%`;
+            progressFill.style.width = progress + '%';
             
-            // Update time info
-            if (status.elapsed_seconds) {
-                const elapsed = formatTime(status.elapsed_seconds);
-                const estimated = status.estimated_total_seconds ? formatTime(status.estimated_total_seconds) : 'Unknown';
-                timeInfo.textContent = `Elapsed: ${elapsed} | Estimated total: ${estimated}`;
+            // Show time info for processing status
+            if (status.status === 'processing' && status.elapsed_seconds) {
+                const minutes = Math.floor(status.elapsed_seconds / 60);
+                const seconds = status.elapsed_seconds % 60;
+                timeInfo.textContent = `Processing for ${minutes}m ${seconds}s...`;
+            } else {
+                timeInfo.textContent = '';
             }
         }
 
-        function formatTime(seconds) {
-            const mins = Math.floor(seconds / 60);
-            const secs = seconds % 60;
-            return `${mins}:${secs.toString().padStart(2, '0')}`;
-        }
-
-        async function handleCompletion(status) {
-            showSuccess('🎉 Video processing completed successfully!');
+        function showDownloadButton(downloadUrl) {
+            statusText.textContent = '✅ Processing completed!';
             progressFill.style.width = '100%';
-            statusText.textContent = 'Processing completed! Ready for download.';
-            
-            // Set up download button
-            if (status.download_url) {
-                downloadBtn.href = status.download_url;
-                downloadBtn.download = status.filename || 'phonk_video.mp4';
-                downloadBtn.style.display = 'inline-block';
-                
-                // Auto-download option
-                setTimeout(() => {
-                    if (confirm('Video is ready! Would you like to download it now?')) {
-                        downloadBtn.click();
-                    }
-                }, 1000);
-            }
+            downloadBtn.href = downloadUrl;
+            downloadBtn.style.display = 'inline-block';
+            showSuccess('Your phonk video is ready for download!');
         }
 
-        // Download button click handler
-        downloadBtn.addEventListener('click', (e) => {
-            // The download will be handled by the href attribute
-            setTimeout(() => {
-                showSuccess('Download started! Check your downloads folder.');
-            }, 500);
-        });
-
-        // Reset functionality
+        // Reset function
         resetBtn.addEventListener('click', () => {
-            resetForm();
-        });
-
-        function resetForm() {
-            // Clear intervals
+            // Clear current job
             if (statusInterval) {
                 clearInterval(statusInterval);
                 statusInterval = null;
             }
-            
-            // Reset variables
             currentJobId = null;
             selectedFile = null;
             
-            // Reset UI elements
+            // Reset UI
             fileInput.value = '';
             fileInfo.style.display = 'none';
             processBtn.style.display = 'none';
@@ -946,152 +444,15 @@ HTML_TEMPLATE = '''<!DOCTYPE html>
             downloadBtn.style.display = 'none';
             resetBtn.style.display = 'none';
             progressFill.style.width = '0%';
-            
-            // Clear messages
             hideMessages();
-            
-            // Reset upload area
-            uploadArea.classList.remove('dragover');
-        }
-
-        // Prevent page refresh/close during processing
-        window.addEventListener('beforeunload', (e) => {
-            if (currentJobId && statusInterval) {
-                e.preventDefault();
-                e.returnValue = 'Video processing is in progress. Are you sure you want to leave?';
-                return e.returnValue;
-            }
         });
 
-        // Handle visibility change (tab switching)
-        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                // Page is hidden, reduce polling frequency
-                if (statusInterval && currentJobId) {
-                    clearInterval(statusInterval);
-                    statusInterval = setInterval(async () => {
-                        // Same polling logic but less frequent
-                        if (!currentJobId) return;
-                        
-                        try {
-                            const response = await fetch(`/status/${currentJobId}`, {
-                                headers: { 'Cache-Control': 'no-cache' }
-                            });
-                            const status = await response.json();
-                            
-                            if (response.ok) {
-                                if (status.status === 'completed') {
-                                    clearInterval(statusInterval);
-                                    // Show notification when tab becomes visible
-                                    document.title = '✅ Video Ready - Phonk Processor';
-                                } else if (status.status === 'error') {
-                                    clearInterval(statusInterval);
-                                    document.title = '❌ Processing Failed - Phonk Processor';
-                                }
-                            }
-                        } catch (error) {
-                            console.error('Background status polling error:', error);
-                        }
-                    }, 5000); // Poll every 5 seconds when hidden
-                }
-            } else {
-                // Page is visible, resume normal polling
-                if (currentJobId) {
-                    document.title = '🎵 PHONK PROCESSOR';
-                    if (statusInterval) {
-                        clearInterval(statusInterval);
-                    }
-                    startStatusPolling(); // Resume normal 2-second polling
-                }
-            }
+        // Download button cleanup
+        downloadBtn.addEventListener('click', () => {
+            setTimeout(() => {
+                resetBtn.click(); // Auto-reset after download
+            }, 1000);
         });
-
-        // Keyboard shortcuts
-        document.addEventListener('keydown', (e) => {
-            // Escape key to reset
-            if (e.key === 'Escape' && !currentJobId) {
-                resetForm();
-            }
-            
-            // Enter key to start processing
-            if (e.key === 'Enter' && selectedFile && processBtn.style.display !== 'none' && !processBtn.disabled) {
-                processBtn.click();
-            }
-        });
-
-        // Error handling for network issues
-        window.addEventListener('online', () => {
-            connectionStatus.textContent = '🟢 Connected';
-            connectionStatus.classList.remove('offline');
-            if (currentJobId && !statusInterval) {
-                startStatusPolling(); // Resume polling when back online
-            }
-        });
-
-        window.addEventListener('offline', () => {
-            connectionStatus.textContent = '🔴 Offline';
-            connectionStatus.classList.add('offline');
-            if (statusInterval) {
-                clearInterval(statusInterval);
-                statusInterval = null;
-            }
-        });
-
-        // Mobile-specific optimizations
-        if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)) {
-            // Reduce polling frequency on mobile to save battery
-            const originalStartPolling = startStatusPolling;
-            startStatusPolling = function() {
-                if (statusInterval) {
-                    clearInterval(statusInterval);
-                }
-                
-                statusInterval = setInterval(async () => {
-                    if (!currentJobId) return;
-                    
-                    try {
-                        const response = await fetch(`/status/${currentJobId}`, {
-                            headers: { 'Cache-Control': 'no-cache' }
-                        });
-                        const status = await response.json();
-                        
-                        if (response.ok) {
-                            updateStatus(status);
-                            
-                            if (status.status === 'completed') {
-                                clearInterval(statusInterval);
-                                handleCompletion(status);
-                            } else if (status.status === 'error') {
-                                clearInterval(statusInterval);
-                                showError(status.message || 'Processing failed');
-                                resetForm();
-                            }
-                        } else {
-                            throw new Error(status.error || 'Status check failed');
-                        }
-                    } catch (error) {
-                        console.error('Status polling error:', error);
-                        showError(`Status check failed: ${error.message}`);
-                        clearInterval(statusInterval);
-                    }
-                }, 3000); // Poll every 3 seconds on mobile instead of 2
-            };
-            
-            // Add mobile-specific styles
-            document.body.style.touchAction = 'manipulation';
-        }
-
-        // Service Worker registration for offline support (optional)
-        if ('serviceWorker' in navigator && 'caches' in window) {
-            navigator.serviceWorker.register('/sw.js').catch(() => {
-                // Service worker registration failed, but that's okay
-            });
-        }
-
-        // Initialize app
-        console.log('Phonk Video Processor initialized');
-        console.log('Supported formats:', ['MP4', 'AVI', 'MOV', 'MKV', 'WEBM']);
-        console.log('Max file size: 100MB');
     </script>
 </body>
 </html>
