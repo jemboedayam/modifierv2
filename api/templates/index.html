@@ -3,326 +3,304 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Phonk Video Processor - Async</title>
+    <title>Phonk Video Processor - Auto Download</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
-        
+
         body {
             font-family: 'Arial', sans-serif;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
             display: flex;
-            justify-content: center;
             align-items: center;
+            justify-content: center;
             color: white;
         }
-        
+
         .container {
-            background: rgba(0, 0, 0, 0.8);
-            padding: 40px;
-            border-radius: 15px;
-            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.3);
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 2rem;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
             text-align: center;
             max-width: 500px;
             width: 90%;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
         }
-        
+
         h1 {
-            font-size: 2.5em;
-            margin-bottom: 10px;
-            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            background-clip: text;
+            margin-bottom: 1.5rem;
+            font-size: 2rem;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
         }
-        
-        .subtitle {
-            color: #ccc;
-            margin-bottom: 30px;
-            font-size: 1.1em;
-        }
-        
+
         .upload-area {
-            border: 2px dashed #666;
+            border: 2px dashed rgba(255, 255, 255, 0.3);
             border-radius: 10px;
-            padding: 40px 20px;
-            margin: 20px 0;
-            transition: all 0.3s ease;
+            padding: 2rem;
+            margin: 1rem 0;
             cursor: pointer;
+            transition: all 0.3s ease;
         }
-        
+
         .upload-area:hover {
-            border-color: #4ecdc4;
-            background: rgba(78, 205, 196, 0.1);
+            border-color: rgba(255, 255, 255, 0.6);
+            background: rgba(255, 255, 255, 0.05);
         }
-        
+
         .upload-area.dragover {
-            border-color: #ff6b6b;
-            background: rgba(255, 107, 107, 0.1);
+            border-color: #4CAF50;
+            background: rgba(76, 175, 80, 0.1);
         }
-        
-        input[type="file"] {
+
+        #fileInput {
             display: none;
         }
-        
-        .upload-icon {
-            font-size: 3em;
-            margin-bottom: 15px;
-            color: #4ecdc4;
-        }
-        
-        .upload-text {
-            font-size: 1.2em;
-            margin-bottom: 10px;
-        }
-        
-        .upload-hint {
-            color: #999;
-            font-size: 0.9em;
-        }
-        
-        .process-btn {
-            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
-            border: none;
-            padding: 15px 30px;
-            border-radius: 25px;
+
+        .btn {
+            background: linear-gradient(45deg, #4CAF50, #45a049);
             color: white;
-            font-size: 1.1em;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 25px;
             cursor: pointer;
+            font-size: 1rem;
             transition: all 0.3s ease;
-            margin: 20px 0;
-            display: none;
+            margin: 10px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }
-        
-        .process-btn:hover {
+
+        .btn:hover {
             transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
         }
-        
-        .process-btn:disabled {
+
+        .btn:disabled {
             opacity: 0.6;
             cursor: not-allowed;
             transform: none;
         }
-        
-        .status-area {
+
+        .progress-container {
             display: none;
-            margin: 20px 0;
-            padding: 20px;
-            border-radius: 10px;
-            background: rgba(255, 255, 255, 0.1);
+            margin: 1rem 0;
         }
-        
-        .status-text {
-            font-size: 1.1em;
-            margin-bottom: 10px;
-        }
-        
+
         .progress-bar {
             width: 100%;
-            height: 6px;
+            height: 20px;
             background: rgba(255, 255, 255, 0.2);
-            border-radius: 3px;
+            border-radius: 10px;
             overflow: hidden;
-            margin-bottom: 10px;
+            margin: 10px 0;
         }
-        
+
         .progress-fill {
             height: 100%;
-            background: linear-gradient(45deg, #ff6b6b, #4ecdc4);
+            background: linear-gradient(45deg, #4CAF50, #45a049);
             width: 0%;
             transition: width 0.3s ease;
-        }
-        
-        .download-btn {
-            background: linear-gradient(45deg, #4ecdc4, #44a08d);
-            border: none;
-            padding: 15px 30px;
-            border-radius: 25px;
-            color: white;
-            font-size: 1.1em;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            text-decoration: none;
-            display: none;
-            margin: 10px;
-        }
-        
-        .download-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.3);
-        }
-        
-        .error {
-            background: rgba(255, 107, 107, 0.2);
-            color: #ff6b6b;
-            padding: 15px;
             border-radius: 10px;
-            margin: 10px 0;
+        }
+
+        .status {
+            margin: 1rem 0;
+            padding: 10px;
+            border-radius: 8px;
             display: none;
         }
-        
-        .success {
-            background: rgba(78, 205, 196, 0.2);
-            color: #4ecdc4;
-            padding: 15px;
-            border-radius: 10px;
-            margin: 10px 0;
-            display: none;
+
+        .status.success {
+            background: rgba(76, 175, 80, 0.2);
+            border: 1px solid rgba(76, 175, 80, 0.4);
         }
-        
+
+        .status.error {
+            background: rgba(244, 67, 54, 0.2);
+            border: 1px solid rgba(244, 67, 54, 0.4);
+        }
+
+        .status.processing {
+            background: rgba(255, 193, 7, 0.2);
+            border: 1px solid rgba(255, 193, 7, 0.4);
+        }
+
+        .spinner {
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 50%;
+            border-top: 2px solid white;
+            width: 20px;
+            height: 20px;
+            animation: spin 1s linear infinite;
+            display: inline-block;
+            margin-right: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
         .file-info {
             background: rgba(255, 255, 255, 0.1);
-            padding: 15px;
-            border-radius: 10px;
+            padding: 10px;
+            border-radius: 8px;
             margin: 10px 0;
             display: none;
         }
-        
-        .reset-btn {
-            background: transparent;
-            border: 2px solid #666;
-            padding: 10px 20px;
-            border-radius: 20px;
-            color: #ccc;
-            cursor: pointer;
-            margin: 10px;
-            transition: all 0.3s ease;
+
+        .auto-download-info {
+            background: rgba(76, 175, 80, 0.2);
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            border: 1px solid rgba(76, 175, 80, 0.4);
         }
-        
-        .reset-btn:hover {
-            border-color: #4ecdc4;
-            color: #4ecdc4;
+
+        .download-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+            animation: bounce 2s infinite;
+        }
+
+        @keyframes bounce {
+            0%, 20%, 50%, 80%, 100% {
+                transform: translateY(0);
+            }
+            40% {
+                transform: translateY(-10px);
+            }
+            60% {
+                transform: translateY(-5px);
+            }
         }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎵 PHONK PROCESSOR</h1>
-        <p class="subtitle">Transform your videos with phonk vibes - Now with async processing!</p>
+        <h1>🎵 Phonk Video Processor</h1>
+        <p>Upload your video and it will automatically download when ready!</p>
         
+        <div class="auto-download-info">
+            <div class="download-icon">⬇️</div>
+            <strong>Auto-Download Enabled</strong><br>
+            Your processed video will automatically start downloading when ready - no need to wait or refresh!
+        </div>
+
         <div class="upload-area" id="uploadArea">
-            <div class="upload-icon">📹</div>
-            <div class="upload-text">Click or drag video here</div>
-            <div class="upload-hint">Supports MP4, AVI, MOV, MKV, WEBM • Max 100MB</div>
-            <input type="file" id="fileInput" accept="video/*">
+            <p>📁 Click here or drag & drop your video file</p>
+            <p style="font-size: 0.9rem; opacity: 0.8; margin-top: 10px;">
+                Supported: MP4, AVI, MOV, MKV, WEBM (Max: 100MB)
+            </p>
         </div>
+
+        <input type="file" id="fileInput" accept="video/*">
         
-        <div class="file-info" id="fileInfo">
-            <strong>Selected:</strong> <span id="fileName"></span><br>
-            <strong>Size:</strong> <span id="fileSize"></span>
-        </div>
+        <div class="file-info" id="fileInfo"></div>
         
-        <button class="process-btn" id="processBtn">🚀 Start Processing</button>
+        <button class="btn" id="uploadBtn" style="display: none;">🚀 Process Video</button>
         
-        <div class="status-area" id="statusArea">
-            <div class="status-text" id="statusText">Processing...</div>
+        <div class="progress-container" id="progressContainer">
             <div class="progress-bar">
                 <div class="progress-fill" id="progressFill"></div>
             </div>
-            <div id="timeInfo" style="font-size: 0.9em; color: #ccc;"></div>
+            <p id="progressText">Processing...</p>
         </div>
         
-        <div class="error" id="errorMsg"></div>
-        <div class="success" id="successMsg"></div>
-        
-        <a class="download-btn" id="downloadBtn" href="#" download>📥 Download Phonk Video</a>
-        
-        <button class="reset-btn" id="resetBtn" style="display: none;">🔄 Process Another Video</button>
+        <div class="status" id="status"></div>
     </div>
 
     <script>
-        let currentJobId = null;
-        let statusInterval = null;
-        let selectedFile = null;
-
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
+        const uploadBtn = document.getElementById('uploadBtn');
         const fileInfo = document.getElementById('fileInfo');
-        const fileName = document.getElementById('fileName');
-        const fileSize = document.getElementById('fileSize');
-        const processBtn = document.getElementById('processBtn');
-        const statusArea = document.getElementById('statusArea');
-        const statusText = document.getElementById('statusText');
+        const progressContainer = document.getElementById('progressContainer');
         const progressFill = document.getElementById('progressFill');
-        const timeInfo = document.getElementById('timeInfo');
-        const errorMsg = document.getElementById('errorMsg');
-        const successMsg = document.getElementById('successMsg');
-        const downloadBtn = document.getElementById('downloadBtn');
-        const resetBtn = document.getElementById('resetBtn');
+        const progressText = document.getElementById('progressText');
+        const status = document.getElementById('status');
 
-        // File upload handling
+        let selectedFile = null;
+        let currentJobId = null;
+        let statusInterval = null;
+
+        // Upload area events
         uploadArea.addEventListener('click', () => fileInput.click());
-        uploadArea.addEventListener('dragover', (e) => {
+        uploadArea.addEventListener('dragover', handleDragOver);
+        uploadArea.addEventListener('dragleave', handleDragLeave);
+        uploadArea.addEventListener('drop', handleDrop);
+        fileInput.addEventListener('change', handleFileSelect);
+        uploadBtn.addEventListener('click', uploadFile);
+
+        function handleDragOver(e) {
             e.preventDefault();
             uploadArea.classList.add('dragover');
-        });
-        uploadArea.addEventListener('dragleave', () => {
+        }
+
+        function handleDragLeave(e) {
+            e.preventDefault();
             uploadArea.classList.remove('dragover');
-        });
-        uploadArea.addEventListener('drop', (e) => {
+        }
+
+        function handleDrop(e) {
             e.preventDefault();
             uploadArea.classList.remove('dragover');
             const files = e.dataTransfer.files;
             if (files.length > 0) {
-                handleFileSelect(files[0]);
+                handleFile(files[0]);
             }
-        });
+        }
 
-        fileInput.addEventListener('change', (e) => {
+        function handleFileSelect(e) {
             if (e.target.files.length > 0) {
-                handleFileSelect(e.target.files[0]);
+                handleFile(e.target.files[0]);
             }
-        });
+        }
 
-        function handleFileSelect(file) {
+        function handleFile(file) {
+            const allowedTypes = ['video/mp4', 'video/avi', 'video/mov', 'video/x-msvideo', 'video/quicktime', 'video/x-matroska', 'video/webm'];
+            const maxSize = 100 * 1024 * 1024; // 100MB
+
+            if (!allowedTypes.some(type => file.type.includes(type.split('/')[1]))) {
+                showStatus('error', 'Please select a valid video file (MP4, AVI, MOV, MKV, WEBM)');
+                return;
+            }
+
+            if (file.size > maxSize) {
+                showStatus('error', 'File size must be less than 100MB');
+                return;
+            }
+
             selectedFile = file;
-            fileName.textContent = file.name;
-            fileSize.textContent = formatFileSize(file.size);
+            showFileInfo(file);
+            uploadBtn.style.display = 'inline-block';
+            hideStatus();
+        }
+
+        function showFileInfo(file) {
+            const size = (file.size / (1024 * 1024)).toFixed(2);
+            fileInfo.innerHTML = `
+                <strong>Selected File:</strong><br>
+                📎 ${file.name}<br>
+                📏 ${size} MB
+            `;
             fileInfo.style.display = 'block';
-            processBtn.style.display = 'inline-block';
-            hideMessages();
         }
 
-        function formatFileSize(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-        }
-
-        function hideMessages() {
-            errorMsg.style.display = 'none';
-            successMsg.style.display = 'none';
-        }
-
-        function showError(message) {
-            errorMsg.textContent = message;
-            errorMsg.style.display = 'block';
-            successMsg.style.display = 'none';
-        }
-
-        function showSuccess(message) {
-            successMsg.textContent = message;
-            successMsg.style.display = 'block';
-            errorMsg.style.display = 'none';
-        }
-
-        // Process video
-        processBtn.addEventListener('click', async () => {
+        async function uploadFile() {
             if (!selectedFile) return;
 
             const formData = new FormData();
             formData.append('video', selectedFile);
 
-            processBtn.disabled = true;
-            processBtn.textContent = '⏳ Uploading...';
-            hideMessages();
+            uploadBtn.disabled = true;
+            uploadBtn.textContent = 'Uploading...';
+            showStatus('processing', 'Uploading video...');
 
             try {
                 const response = await fetch('/upload', {
@@ -334,125 +312,99 @@
 
                 if (response.ok) {
                     currentJobId = result.job_id;
-                    showSuccess('Video uploaded successfully! Processing started...');
-                    statusArea.style.display = 'block';
-                    processBtn.style.display = 'none';
-                    resetBtn.style.display = 'inline-block';
-                    
-                    // Start polling for status
+                    showStatus('processing', 'Upload complete! Processing started...');
                     startStatusPolling();
                 } else {
                     throw new Error(result.error || 'Upload failed');
                 }
             } catch (error) {
-                showError('Upload failed: ' + error.message);
-                processBtn.disabled = false;
-                processBtn.textContent = '🚀 Start Processing';
+                showStatus('error', `Upload failed: ${error.message}`);
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = '🚀 Process Video';
             }
-        });
+        }
 
         function startStatusPolling() {
-            if (statusInterval) clearInterval(statusInterval);
+            progressContainer.style.display = 'block';
             
             statusInterval = setInterval(async () => {
                 try {
                     const response = await fetch(`/status/${currentJobId}`);
-                    const status = await response.json();
+                    const jobStatus = await response.json();
 
                     if (response.ok) {
-                        updateStatus(status);
+                        updateProgress(jobStatus);
                         
-                        if (status.status === 'completed') {
+                        if (jobStatus.status === 'completed') {
                             clearInterval(statusInterval);
-                            showDownloadButton(status.download_url);
-                        } else if (status.status === 'error') {
+                            await triggerAutoDownload();
+                        } else if (jobStatus.status === 'error') {
                             clearInterval(statusInterval);
-                            showError(status.message || 'Processing failed');
-                            resetBtn.style.display = 'inline-block';
+                            showStatus('error', `Processing failed: ${jobStatus.message}`);
+                            resetUI();
                         }
-                    } else {
-                        throw new Error(status.error || 'Status check failed');
                     }
                 } catch (error) {
-                    console.error('Status polling error:', error);
-                    showError('Failed to check processing status');
-                    clearInterval(statusInterval);
+                    console.error('Status check failed:', error);
                 }
-            }, 2000); // Poll every 2 seconds
+            }, 2000);
         }
 
-        function updateStatus(status) {
-            statusText.textContent = status.message || 'Processing...';
-            
-            // Update progress based on status
-            let progress = 0;
-            switch (status.status) {
-                case 'pending':
-                    progress = 10;
-                    break;
-                case 'processing':
-                    // Estimate progress based on elapsed time
-                    const elapsed = status.elapsed_seconds || 0;
-                    const estimated = status.estimated_total_seconds || 120;
-                    progress = Math.min(90, 20 + (elapsed / estimated) * 70);
-                    break;
-                case 'completed':
-                    progress = 100;
-                    break;
-                case 'error':
-                    progress = 0;
-                    break;
-            }
-            
-            progressFill.style.width = progress + '%';
-            
-            // Show time info for processing status
-            if (status.status === 'processing' && status.elapsed_seconds) {
-                const minutes = Math.floor(status.elapsed_seconds / 60);
-                const seconds = status.elapsed_seconds % 60;
-                timeInfo.textContent = `Processing for ${minutes}m ${seconds}s...`;
-            } else {
-                timeInfo.textContent = '';
+        function updateProgress(jobStatus) {
+            const messages = {
+                'pending': 'Queued for processing...',
+                'processing': 'Processing video with phonk effects...',
+                'completed': 'Processing complete! Preparing download...'
+            };
+
+            progressText.innerHTML = `<span class="spinner"></span>${messages[jobStatus.status] || jobStatus.message}`;
+
+            if (jobStatus.status === 'processing' && jobStatus.elapsed_seconds) {
+                const progress = Math.min((jobStatus.elapsed_seconds / 120) * 100, 95);
+                progressFill.style.width = `${progress}%`;
+                progressText.innerHTML += `<br><small>Elapsed: ${jobStatus.elapsed_seconds}s</small>`;
+            } else if (jobStatus.status === 'completed') {
+                progressFill.style.width = '100%';
             }
         }
 
-        function showDownloadButton(downloadUrl) {
-            statusText.textContent = '✅ Processing completed!';
-            progressFill.style.width = '100%';
-            downloadBtn.href = downloadUrl;
-            downloadBtn.style.display = 'inline-block';
-            showSuccess('Your phonk video is ready for download!');
+        async function triggerAutoDownload() {
+            try {
+                showStatus('success', '✅ Processing complete! Starting download...');
+                progressText.innerHTML = '<span class="spinner"></span>Preparing download...';
+
+                const response = await fetch(`/download-auto/${currentJobId}`);
+                const result = await response.json();
+
+                if (response.ok && result.status === 'ready') {
+                    // Create and trigger download
+                    const link = document.createElement('a');
+                    link.href = `data:video/mp4;base64,${result.data}`;
+                    link.download = result.filename;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+
+                    showStatus('success', `🎉 Download started! File: ${result.filename}`);
+                    resetUI();
+                } else {
+                    throw new Error(result.error || 'Download preparation failed');
+                }
+            } catch (error) {
+                showStatus('error', `Download failed: ${error.message}`);
+                resetUI();
+            }
         }
 
-        // Reset function
-        resetBtn.addEventListener('click', () => {
-            // Clear current job
-            if (statusInterval) {
-                clearInterval(statusInterval);
-                statusInterval = null;
-            }
-            currentJobId = null;
-            selectedFile = null;
-            
-            // Reset UI
-            fileInput.value = '';
-            fileInfo.style.display = 'none';
-            processBtn.style.display = 'none';
-            processBtn.disabled = false;
-            processBtn.textContent = '🚀 Start Processing';
-            statusArea.style.display = 'none';
-            downloadBtn.style.display = 'none';
-            resetBtn.style.display = 'none';
-            progressFill.style.width = '0%';
-            hideMessages();
-        });
+        function showStatus(type, message) {
+            status.className = `status ${type}`;
+            status.innerHTML = message;
+            status.style.display = 'block';
+        }
 
-        // Download button cleanup
-        downloadBtn.addEventListener('click', () => {
-            setTimeout(() => {
-                resetBtn.click(); // Auto-reset after download
-            }, 1000);
-        });
-    </script>
-</body>
-</html>
+        function hideStatus() {
+            status.style.display = 'none';
+        }
+
+        function resetUI() {
+            uploadBtn.disabled = false
