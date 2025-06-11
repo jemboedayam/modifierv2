@@ -128,7 +128,6 @@ def process_video_in_memory(video_data, original_filename):
             threads=2,
             bitrate="2000k",
             audio_bitrate="128k",
-            verbose=False,
             logger=None
         )
         
