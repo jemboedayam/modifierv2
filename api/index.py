@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, Response
+from flask import Flask, request, jsonify, Response,render_template
 from flask_cors import CORS
 import numpy as np
 from moviepy import VideoFileClip
@@ -213,15 +213,7 @@ def status():
 
 @app.route('/')
 def index():
-    return jsonify({
-        'name': 'In-Memory Phonk Video Processor',
-        'version': '3.0.0',
-        'description': 'Process videos entirely in memory without disk storage',
-        'endpoints': {
-            '/upload': 'POST - Upload and process video (in-memory)',
-            '/status': 'GET - Check API status'
-        }
-    })
+    return render_template('index.html')
 
 if __name__ == '__main__':
     print("Starting In-Memory Phonk Video Processor...")
